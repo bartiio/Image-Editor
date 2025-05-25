@@ -15,6 +15,9 @@ import matplotlib.pyplot as plt
 from resize_utils import ask_resize, batch_resize_images
 from siec_osoby import run_detection
 
+undo_stack = []
+redo_stack = []
+
 root = tk.Tk()
 root.geometry("1000x800+300+150")
 root.resizable(width=True, height=True)
@@ -46,6 +49,35 @@ edge = None
 show_hist = tk.BooleanVar(value=True)
 img_width = 0
 img_height = 0
+
+def push_undo(image_pil):
+    global undo_stack, redo_stack
+    undo_stack.append(image_pil.copy())
+    redo_stack.clear()  
+
+def undo():
+    global edge, img, image_id, undo_stack, redo_stack
+    if not undo_stack:
+        messagebox.showinfo("Undo", "Brak dalszych cofnięć")
+        return
+    redo_stack.append(edge.copy())  # zapisujemy obecny stan do redo
+    edge = undo_stack.pop()
+    img = ImageTk.PhotoImage(edge)
+    canvas.itemconfig(image_id, image=img)
+    if show_hist.get():
+        update_histogram()
+
+def redo():
+    global edge, img, image_id, undo_stack, redo_stack
+    if not redo_stack:
+        messagebox.showinfo("Redo", "Brak dalszych powtórzeń")
+        return
+    undo_stack.append(edge.copy())  # zapisujemy obecny stan do undo
+    edge = redo_stack.pop()
+    img = ImageTk.PhotoImage(edge)
+    canvas.itemconfig(image_id, image=img)
+    if show_hist.get():
+        update_histogram()
 
 def update_resized_image(new_edge, new_width, new_height):
     global edge, img, image_id, img_width, img_height
@@ -122,6 +154,7 @@ def apply_canny():
     global edge, img, image_id
     if edge is None:
         return
+    push_undo(edge)
     arr = np.array(edge)
     if len(arr.shape) == 3 and arr.shape[2] == 3:
         gray = cv2.cvtColor(arr, cv2.COLOR_RGB2GRAY)
@@ -138,6 +171,7 @@ def apply_sobel():
     global edge, img, image_id
     if edge is None:
         return
+    push_undo(edge)
     arr = np.array(edge)
     if len(arr.shape) == 3 and arr.shape[2] == 3:
         gray = cv2.cvtColor(arr, cv2.COLOR_RGB2GRAY)
@@ -156,6 +190,7 @@ def apply_laplacian():
     global edge, img, image_id
     if edge is None:
         return
+    push_undo(edge)
     arr = np.array(edge)
     if len(arr.shape) == 3 and arr.shape[2] == 3:
         gray = cv2.cvtColor(arr, cv2.COLOR_RGB2GRAY)
@@ -167,63 +202,101 @@ def apply_laplacian():
     canvas.itemconfig(image_id, image=img)
     if show_hist.get():
         update_histogram()
+        
+def update_displayed_image(pil_img):
+    global edge, img, image_id, img_width, img_height
+    edge = pil_img
+    img_width, img_height = pil_img.size
+    img = ImageTk.PhotoImage(pil_img)
+    canvas.itemconfig(image_id, image=img)
+    if show_hist.get():
+        update_histogram()
 
 def add_watermark():
     global edge, img, image_id
     if edge is None:
         return
-    
-    # Przekazanie obecnego obrazu z interfejsu do funkcji Water
-    output = Water(edge, znak_rozmiar=(40, 40), wspolczynnik=0.3)
+    push_undo(edge)
+    # Okno dialogowe do wpisania tekstu
+    dialog = tk.Toplevel(root)
+    dialog.title("Dodaj znak wodny")
+    dialog.geometry("300x150")
 
-    # Przekształcenie z powrotem na obraz PIL, a następnie na ImageTk.PhotoImage
-    edge = Image.fromarray(output)
-    img = ImageTk.PhotoImage(edge)
+    tk.Label(dialog, text="Wpisz tekst znaku wodnego:").pack(pady=10)
+    text_var = tk.StringVar()
+    entry = tk.Entry(dialog, textvariable=text_var, font=("Segoe UI", 12))
+    entry.pack(pady=5)
+    entry.focus_set()
 
-    # Aktualizacja obrazu na canvasie
-    canvas.itemconfig(image_id, image=img)
-    if show_hist.get():
-        update_histogram()
+    def apply_text_watermark():
+        text = text_var.get().strip()
+        if not text:
+            messagebox.showwarning("Błąd", "Tekst nie może być pusty.")
+            return
+        dialog.destroy()
+        output = Water(edge, znak_rozmiar=(40, 40), wspolczynnik=0.3, tekst=text)
+        from PIL import Image
+        edge_pil = Image.fromarray(output)
+        update_displayed_image(edge_pil)
+
+    tk.Button(dialog, text="Zastosuj", command=apply_text_watermark).pack(pady=10)
+
 
 def watermark_multiple_images():
     from PIL import Image
 
-    file_paths = filedialog.askopenfilenames(
-        title="Select Images to Watermark",
-        filetypes=[("Image files", "*.jpg *.jpeg *.png *.bmp *.tiff *.gif")]
-    )
+    dialog = tk.Toplevel(root)
+    dialog.title("Dodaj znak wodny")
+    dialog.geometry("300x150")
 
-    if not file_paths:
-        return
+    tk.Label(dialog, text="Wpisz tekst znaku wodnego:").pack(pady=10)
+    text_var = tk.StringVar()
+    entry = tk.Entry(dialog, textvariable=text_var, font=("Segoe UI", 12))
+    entry.pack(pady=5)
+    entry.focus_set()
 
-    success_count = 0
-    error_files = []
 
-    for path in file_paths:
-        try:
-            image = Image.open(path)
-            watermarked = Water(image, znak_rozmiar=(40, 40), wspolczynnik=0.3)
-            watermarked_img = Image.fromarray(watermarked)
+    def apply_multiple_WN():
+        dialog.destroy()
+        file_paths = filedialog.askopenfilenames(
+            title="Select Images to Watermark",
+            filetypes=[("Image files", "*.jpg *.jpeg *.png *.bmp *.tiff *.gif")]
+        )
 
-            base, ext = os.path.splitext(path)
-            new_path = base + "_WM" + ext
-            watermarked_img.save(new_path)
-            success_count += 1
-        except Exception as e:
-            error_files.append((path, str(e)))
+        if not file_paths:
+            return
 
-    summary = f"{success_count} image(s) watermarked successfully."
-    if error_files:
-        summary += "\n\nSome files failed:\n"
-        for path, err in error_files:
-            summary += f"\n{os.path.basename(path)}: {err}"
+        success_count = 0
+        error_files = []
 
-    messagebox.showinfo("Watermarking Completed", summary)
+        for path in file_paths:
+            try:
+                text = text_var.get().strip()
+                image = Image.open(path)
+                watermarked = Water(image, znak_rozmiar=(40, 40), wspolczynnik=0.3, tekst = text)
+                watermarked_img = Image.fromarray(watermarked)
+
+                base, ext = os.path.splitext(path)
+                new_path = base + "_WM" + ext
+                watermarked_img.save(new_path)
+                success_count += 1
+            except Exception as e:
+                error_files.append((path, str(e)))
+
+        summary = f"{success_count} image(s) watermarked successfully."
+        if error_files:
+            summary += "\n\nSome files failed:\n"
+            for path, err in error_files:
+                summary += f"\n{os.path.basename(path)}: {err}"
+
+        messagebox.showinfo("Watermarking Completed", summary)
+    tk.Button(dialog, text="Zastosuj", command=apply_multiple_WN).pack(pady=10)
 
 # --- PROGOWANIE ---
 def th_const(thresh_val=127, max_val=255):
     global edge, img, image_id
     if edge is None: return
+    push_undo(edge)
     arr = np.array(edge)
     if len(arr.shape) == 3 and arr.shape[2] == 3:
         gray = cv2.cvtColor(arr, cv2.COLOR_RGB2GRAY)
@@ -239,6 +312,7 @@ def th_const(thresh_val=127, max_val=255):
 def th_adapt(max_val=255):
     global edge, img, image_id
     if edge is None: return
+    push_undo(edge)
     arr = np.array(edge)
     if len(arr.shape) == 3 and arr.shape[2] == 3:
         gray = cv2.cvtColor(arr, cv2.COLOR_RGB2GRAY)
@@ -255,6 +329,7 @@ def th_adapt(max_val=255):
 def th_otsu():
     global edge, img, image_id
     if edge is None: return
+    push_undo(edge)
     arr = np.array(edge)
     if len(arr.shape) == 3 and arr.shape[2] == 3:
         gray = cv2.cvtColor(arr, cv2.COLOR_RGB2GRAY)
@@ -320,6 +395,7 @@ def detect_people():
     if edge is None:
         messagebox.showinfo("Brak obrazu", "Najpierw otwórz obraz.")
         return
+    push_undo(edge)
 
     # Okno dialogowe do wyboru klasy
     class_dialog = tk.Toplevel(root)
@@ -410,6 +486,14 @@ file_menu.add_command(label='Save', command=savefile)
 file_menu.add_command(label='Exit', command=root.destroy)
 menubar.add_cascade(label="File", menu=file_menu)
 
+edit_menu = Menu(menubar, tearoff=0)
+edit_menu.add_command(label="Resize Image", command=lambda: ask_resize(root, edge, img_width, img_height, update_resized_image))
+edit_menu.add_command(label="Batch Resize Images", command=batch_resize_images)
+edit_menu.add_separator()
+edit_menu.add_command(label="Undo", command=undo)
+edit_menu.add_command(label="Redo", command=redo)
+menubar.add_cascade(label="Edit", menu=edit_menu)
+
 edge_menu = Menu(menubar, tearoff=0)
 edge_menu.add_command(label='Canny', command=apply_canny)
 edge_menu.add_command(label='Sobel', command=apply_sobel)
@@ -427,12 +511,6 @@ watermark_menu.add_command(label='Add Watermark', command=add_watermark)
 watermark_menu.add_command(label='Watermark Multiple', command=watermark_multiple_images)
 menubar.add_cascade(label="Watermark", menu=watermark_menu)
 
-edit_menu = Menu(menubar, tearoff=0)
-edit_menu.add_command(label="Resize Image", command=lambda: ask_resize(root, edge, img_width, img_height, update_resized_image))
-edit_menu.add_command(label="Batch Resize Images", command=batch_resize_images)
-menubar.add_cascade(label="Edit", menu=edit_menu)
-
-
 hist_menu = Menu(menubar, tearoff=0)
 hist_menu.add_checkbutton(label="Show Histogram", variable=show_hist, command=update_histogram)
 menubar.add_cascade(label="Histogram", menu=hist_menu)
@@ -440,4 +518,6 @@ menubar.add_cascade(label="Histogram", menu=hist_menu)
 detect_menu = Menu(menubar, tearoff=0)
 detect_menu.add_command(label="Neural Detection", command=detect_people)
 menubar.add_cascade(label="Neural Network", menu=detect_menu)
+root.bind_all("<Control-z>", lambda event: undo())
+root.bind_all("<Control-y>", lambda event: redo())
 root.mainloop()
